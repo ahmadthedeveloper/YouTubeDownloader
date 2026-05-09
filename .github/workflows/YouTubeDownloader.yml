@@ -26,7 +26,7 @@ on:
           - audio
         default: 'video'
       quality:
-        description: 'Quality (video: 144/360/480/720/1080 | audio: 128/192/320)'
+        description: 'Quality (video: 144/360/480/720/1080/highest | audio: 128/192/320)'
         required: false
         type: string
         default: '720'
@@ -256,13 +256,9 @@ jobs:
               print(f'📄 Index: {idxf}')
               return idxf
 
-          # ============================================================
-          # CHANGE 1: REPLACED dl_video() - now uses yt-dlp directly
-          # ============================================================
           def dl_video(u):
               """Download using yt-dlp directly (works for YouTube, Pornhub, any site yt-dlp supports)"""
               ext = 'mp3' if T == 'audio' else 'mp4'
-              # Use a temp directory for yt-dlp output
               temp_dir = Path('/tmp/ytdl_temp')
               temp_dir.mkdir(parents=True, exist_ok=True)
               
@@ -274,7 +270,8 @@ jobs:
               }
               
               if T == 'video':
-                  if Q == 'highest':
+                  # ===== Added "highest" support here =====
+                  if Q.lower() == 'highest':
                       ydl_opts['format'] = 'bestvideo+bestaudio/best'
                   else:
                       ydl_opts['format'] = f'bestvideo[height<={Q}]+bestaudio/best[height<={Q}]'
@@ -295,15 +292,11 @@ jobs:
                       import yt_dlp
                       with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                           info = ydl.extract_info(u, download=True)
-                          # Find the downloaded file
                           title = info.get('title', 'Untitled')
-                          # yt-dlp sanitizes the filename
                           safe_title = re.sub(r'[\\/*?:"<>|]', '_', title)[:200]
-                          ext_actual = ext
                           for f in temp_dir.iterdir():
                               if f.is_file() and safe_title in f.name:
-                                  return {'u': str(f), 'e': ext_actual, 'local': True}
-                          # If we didn't find it by name, just grab the latest file
+                                  return {'u': str(f), 'e': ext, 'local': True}
                           files = sorted(temp_dir.iterdir(), key=os.path.getmtime, reverse=True)
                           if files:
                               return {'u': str(files[0]), 'e': files[0].suffix[1:], 'local': True}
@@ -312,23 +305,17 @@ jobs:
                       time.sleep(2)
               return None
 
-          # ============================================================
-          # CHANGE 2: REPLACED download_file() - handles local files now
-          # ============================================================
           def download_file(url, filepath):
               """Copy a local file or download a remote file"""
               try:
                   if url.startswith('/') or url.startswith('/tmp'):
-                      # Local file from yt-dlp temp dir
                       src = Path(url)
                       if src.exists():
-                          # Move instead of copy to save time
                           import shutil
                           shutil.move(str(src), str(filepath))
                           size = filepath.stat().st_size
                           print(f'   ✅ {size/1e6:.1f}MB')
                           return size
-                  # If remote (fallback - shouldn't happen but keep for safety)
                   dr = rq.get(url, headers=H, stream=True, timeout=600)
                   if dr.status_code == 200:
                       total = int(dr.headers.get('content-length', 0))
@@ -429,14 +416,10 @@ jobs:
               print(f'{"="*50}')
 
           else:
-              # ============================================================
-              # CHANGE 3: Single mode - use URL directly (no YouTube-specific regex)
-              # ============================================================
               print(f'\n📥 Single video: {U}')
               
               result = dl_video(U)
               if result:
-                  # Get channel info from yt-dlp for folder naming
                   try:
                       import yt_dlp
                       with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'no_check_certificate': True}) as ydl:
@@ -449,7 +432,6 @@ jobs:
                   cd = Path(f'downloads/{cn}_videos')
                   cd.mkdir(parents=True, exist_ok=True)
                   
-                  # Get a unique filename
                   try:
                       import yt_dlp
                       with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'no_check_certificate': True}) as ydl:
