@@ -64,17 +64,11 @@ jobs:
           path: ~/.cache/pip
           key: pip-${{ runner.os }}
 
-      # ═══════════════════════════════════════════════════════════
-      # 🔥 FIX #1: Install ffmpeg (required for merging
-      #    video+audio streams at 1080p and above)
-      # ═══════════════════════════════════════════════════════════
       - name: ⚡ Setup
         run: |
           python3 -c "import requests" 2>/dev/null || pip3 install -q requests
           command -v yt-dlp &>/dev/null || pip3 install -q yt-dlp
           command -v zip &>/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq zip)
-          # 🔥 NEW: Install ffmpeg for merging high-quality streams
-          command -v ffmpeg &>/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
 
       - name: 🔗 Prepare
         id: prep
@@ -117,7 +111,7 @@ jobs:
           }
 
           def safe_name(text, maxlen=40):
-              safe = re.sub(r'[^\w]', '_', text)[:maxlen]
+              safe = re.sub(r'[^\\w]', '_', text)[:maxlen]
               safe = re.sub(r'_+', '_', safe).strip('_')
               if not safe:
                   safe = hashlib.md5(text.encode()).hexdigest()[:8]
@@ -147,7 +141,7 @@ jobs:
                       channel_url = d.get('channel_url', '') or d.get('uploader_url', '')
                       handle = None
                       if channel_url:
-                          m = re.search(r'@([\w-]+)', channel_url)
+                          m = re.search(r'@([\\w-]+)', channel_url)
                           if m: handle = m.group(1)
                       if not handle:
                           handle = safe_name(channel, 30) if channel and channel != 'Unknown' else None
@@ -157,13 +151,13 @@ jobs:
 
           def get_channel_from_url(url):
               """Extract channel identifier from any YouTube URL"""
-              m = re.search(r'@([\w-]+)', url)
+              m = re.search(r'@([\\w-]+)', url)
               if m: return m.group(1)
-              m = re.search(r'channel/([\w-]+)', url)
+              m = re.search(r'channel/([\\w-]+)', url)
               if m: return m.group(1)
-              m = re.search(r'c/([\w-]+)', url)
+              m = re.search(r'c/([\\w-]+)', url)
               if m: return m.group(1)
-              m = re.search(r'user/([\w-]+)', url)
+              m = re.search(r'user/([\\w-]+)', url)
               if m: return m.group(1)
               return None
 
@@ -187,16 +181,12 @@ jobs:
           def gvl(u, n):
               """Get video list - returns (videos, channel_folder_name)"""
               channel_folder = get_channel_from_url(u)
-              
               if not channel_folder and 'playlist' in u:
                   print(f'   🔍 Detecting channel from playlist...')
                   channel_folder = get_channel_from_playlist(u)
-              
               if not channel_folder:
                   channel_folder = 'playlist_videos'
-              
               print(f'   📁 Folder: {channel_folder}_videos')
-              
               c = ['yt-dlp', '--flat-playlist', '--dump-json', '--no-warnings', '--no-check-certificate']
               if n > 0: c.extend(['--playlist-end', str(n)])
               c.append(u)
@@ -208,18 +198,14 @@ jobs:
                           d = json.loads(line)
                           vid = d.get('id', '')
                           if not vid: continue
-                          
                           title = d.get('title', 'Untitled')[:60]
                           print(f'   📊 [{len(v)+1}/{n}] {title}...')
-                          
                           ch, vw, dr, _ = gv(vid)
-                          
                           if not ch or ch == 'Unknown':
                               ch = (d.get('channel') or d.get('uploader') or 
                                     d.get('uploader_id') or d.get('creator') or 'Unknown')
                           if not vw: vw = d.get('view_count')
                           if not dr: dr = d.get('duration', 0)
-                          
                           v.append({
                               'id': vid, 't': title,
                               'u': f'https://youtube.com/watch?v={vid}',
@@ -239,14 +225,12 @@ jobs:
               inf = cd / 'info'
               inf.mkdir(parents=True, exist_ok=True)
               idxf = f'playlists/{cn}_{ts}.md'
-              
               m = (f'# 📺 {cn}\n\n**{datetime.now():%Y-%m-%d %H:%M}** | **{len(v)} videos**\n\n'
                    f'| # | Thumbnail | Title | Duration | Views |\n'
                    f'|---|-----------|-------|----------|-------|\n')
               for i, x in enumerate(v, 1):
                   dur_str = f'{x["dr"]//60}:{x["dr"]%60:02d}' if x['dr'] else '?'
                   m += f'| {i} | [<img src="{x["th"]}" width="80">]({x["u"]}) | [{x["t"]}]({x["u"]}) | {dur_str} | {x["v"]} |\n'
-              
               m += '\n---\n\n## 📝 Details\n\n'
               for i, x in enumerate(v, 1):
                   sn = f'v{i:03d}_{x["id"]}'
@@ -268,25 +252,20 @@ jobs:
                        f'![Thumbnail]({x["th"]})\n\n'
                        f'- **{dur_str}** | **{x["v"]}** views | **{x["c"]}**\n'
                        f'- 📄 [info/{sn}.md](info/{sn}.md)\n\n---\n\n')
-              
               Path(idxf).write_text(m)
               print(f'📄 Index: {idxf}')
               return idxf
 
-          # ═══════════════════════════════════════════════════════════
-          # 🔥 FIX #2: dl_video() with intelligent fallback
-          #    - Tries merge format first (needs ffmpeg)
-          #    - If ffmpeg/merge fails, falls back to single-stream
-          #    - Works for ANY site (YouTube, Vimeo, Pornhub, etc.)
-          # ═══════════════════════════════════════════════════════════
+          # ============================================================
+          # CHANGE 1: REPLACED dl_video() - now uses yt-dlp directly
+          # ============================================================
           def dl_video(u):
-              """Download using yt-dlp (works for any site yt-dlp supports).
-              Falls back to single-stream format if ffmpeg merge fails."""
+              """Download using yt-dlp directly (works for YouTube, Pornhub, any site yt-dlp supports)"""
               ext = 'mp3' if T == 'audio' else 'mp4'
+              # Use a temp directory for yt-dlp output
               temp_dir = Path('/tmp/ytdl_temp')
               temp_dir.mkdir(parents=True, exist_ok=True)
               
-              # ── Strategy 1: With merge (requires ffmpeg) ──────────
               ydl_opts = {
                   'outtmpl': str(temp_dir / '%(title)s.%(ext)s'),
                   'quiet': True,
@@ -305,76 +284,51 @@ jobs:
                   ydl_opts['postprocessors'] = [{
                       'key': 'FFmpegExtractAudio',
                       'preferredcodec': 'mp3',
-                      'preferredquality': Q if Q != 'highest' else '192',
+                      'preferredquality': Q,
                   }]
               
-              # ── Strategy 2: Single-stream (no merge needed) ──────
-              fallback_opts = {
-                  'outtmpl': str(temp_dir / '%(title)s.%(ext)s'),
-                  'quiet': True,
-                  'no_warnings': True,
-                  'no_check_certificate': True,
-              }
-              if T == 'video':
-                  fallback_opts['format'] = 'best'  # already merged
-              else:
-                  fallback_opts['format'] = 'bestaudio/best'
-                  fallback_opts['postprocessors'] = [{
-                      'key': 'FFmpegExtractAudio',
-                      'preferredcodec': 'mp3',
-                      'preferredquality': Q if Q != 'highest' else '192',
-                  }]
-              
-              strategies = [
-                  ('With merge (high quality)', ydl_opts),
-                  ('Fallback (single stream)', fallback_opts),
-              ]
-              
-              for strategy_name, opts in strategies:
-                  for retry in range(3):
-                      if retry > 0:
-                          print(f'   🔄 Retry {retry}/3 ({strategy_name.lower()})...')
-                          time.sleep(5)
-                      try:
-                          import yt_dlp
-                          with yt_dlp.YoutubeDL(opts) as ydl:
-                              info = ydl.extract_info(u, download=True)
-                              # Find the downloaded file
-                              title = info.get('title', 'Untitled')
-                              safe_title = re.sub(r'[\\/*?:"<>|]', '_', title)[:200]
-                              ext_actual = ext
-                              for f in temp_dir.iterdir():
-                                  if f.is_file() and safe_title in f.name:
-                                      return {'u': str(f), 'e': ext_actual, 'local': True}
-                              # If not found by name, grab the latest file
-                              files = sorted(temp_dir.iterdir(), key=os.path.getmtime, reverse=True)
-                              if files:
-                                  return {'u': str(files[0]), 'e': files[0].suffix[1:], 'local': True}
-                      except Exception as e:
-                          err_str = str(e)[:80]
-                          print(f'   ❌ {strategy_name} error: {err_str}')
-                          # If ffmpeg/merge issue, skip to fallback immediately
-                          if strategy_name == 'With merge (high quality)' and \
-                             any(word in err_str.lower() for word in ['ffmpeg', 'mux', 'merge', 'not found']):
-                              print('   ⚠ ffmpeg/muxer issue, switching to single-stream fallback...')
-                              break  # Go to next strategy
-                          time.sleep(2)
+              for retry in range(3):
+                  if retry > 0:
+                      print(f'   🔄 Retry {retry}/3...')
+                      time.sleep(5)
+                  try:
+                      import yt_dlp
+                      with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                          info = ydl.extract_info(u, download=True)
+                          # Find the downloaded file
+                          title = info.get('title', 'Untitled')
+                          # yt-dlp sanitizes the filename
+                          safe_title = re.sub(r'[\\/*?:"<>|]', '_', title)[:200]
+                          ext_actual = ext
+                          for f in temp_dir.iterdir():
+                              if f.is_file() and safe_title in f.name:
+                                  return {'u': str(f), 'e': ext_actual, 'local': True}
+                          # If we didn't find it by name, just grab the latest file
+                          files = sorted(temp_dir.iterdir(), key=os.path.getmtime, reverse=True)
+                          if files:
+                              return {'u': str(files[0]), 'e': files[0].suffix[1:], 'local': True}
+                  except Exception as e:
+                      print(f'   ❌ yt-dlp error: {str(e)[:60]}')
+                      time.sleep(2)
               return None
 
-          # ──────────────────────────────────────────────────────────
-          # download_file() – moves local files from temp dir
-          # ──────────────────────────────────────────────────────────
+          # ============================================================
+          # CHANGE 2: REPLACED download_file() - handles local files now
+          # ============================================================
           def download_file(url, filepath):
               """Copy a local file or download a remote file"""
               try:
                   if url.startswith('/') or url.startswith('/tmp'):
+                      # Local file from yt-dlp temp dir
                       src = Path(url)
                       if src.exists():
+                          # Move instead of copy to save time
                           import shutil
                           shutil.move(str(src), str(filepath))
                           size = filepath.stat().st_size
                           print(f'   ✅ {size/1e6:.1f}MB')
                           return size
+                  # If remote (fallback - shouldn't happen but keep for safety)
                   dr = rq.get(url, headers=H, stream=True, timeout=600)
                   if dr.status_code == 200:
                       total = int(dr.headers.get('content-length', 0))
@@ -475,11 +429,14 @@ jobs:
               print(f'{"="*50}')
 
           else:
-              # Single mode – works for ANY URL (YouTube, Vimeo, Pornhub, etc.)
+              # ============================================================
+              # CHANGE 3: Single mode - use URL directly (no YouTube-specific regex)
+              # ============================================================
               print(f'\n📥 Single video: {U}')
               
               result = dl_video(U)
               if result:
+                  # Get channel info from yt-dlp for folder naming
                   try:
                       import yt_dlp
                       with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'no_check_certificate': True}) as ydl:
@@ -492,6 +449,7 @@ jobs:
                   cd = Path(f'downloads/{cn}_videos')
                   cd.mkdir(parents=True, exist_ok=True)
                   
+                  # Get a unique filename
                   try:
                       import yt_dlp
                       with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'no_check_certificate': True}) as ydl:
